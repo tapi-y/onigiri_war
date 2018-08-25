@@ -1,16 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import math
+import numpy as np
 """ROS関連"""
 import rospy
 import tf
+import cv2
 """ROS関連topicの型読み込み"""
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 from geometry_msgs.msg import Pose
-
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
 
 class OdomRun():
 	def __init__(self):
@@ -21,6 +24,7 @@ class OdomRun():
 		self.now_pose = Pose()
 		"""移動パターン開始時のロボットの座標保存用"""
 		self.start_pose = Pose()
+		self.bridge = CvBridge()
 		self.start_degree = math.pi
 
 	def start(self):
@@ -28,12 +32,23 @@ class OdomRun():
 		self.odom_sub = rospy.Subscriber("odom", Odometry, self.odom_callback, queue_size=1)
 		self.opt_right_sub = rospy.Subscriber('opt_right', LaserScan, self.optRightCallback)
 		self.usonic_right_sub = rospy.Subscriber('us_left', LaserScan, self.usonicRightCallback)
+		self.image_sub = rospy.Subscriber("camera/image_raw",Image,self.imageCallback)
 		"""publish（送信）するトピックの登録"""
 		self.pub = rospy.Publisher("cmd_vel", Twist, queue_size=1)
     	def optRightCallback(self, data):
         	self.opt_r = data.ranges[0]
     	def usonicRightCallback(self, data):
-        	self.us_r = data.ranges[0]		
+        	self.us_r = data.ranges[0]
+	def imageCallback(self,data):		
+		try:
+			cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
+		except CvBridgeError as e:
+			print(e)
+		hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        	lower_g = np.array([40,70,150])
+        	upper_g = np.array([70,150,255])
+        	mask1 = cv2.inRange(hsv,lower_g,upper_g)
+		m = cv2.moments(mask1)
 
 	def odom_callback(self, result):
 		"""/odomトピック(ロボットが認識している座標)の情報から移動パターンに沿った移動命令を送信"""
@@ -123,18 +138,26 @@ class OdomRun():
 			else:
 				vel_msg.angular.z = 0.5
 		elif self.status == 8:
+			if distance < 1.0:
+				"""速度0.2m/s"""
+				vel_msg.linear.x = -0.3
+			elif distance >= 1.0:
+				vel_msg.linear.x = 0
+				self.start_pose = self.now_pose
+				self.start_degree = now_degree[2]
+				self.status = 9
+		elif self.status == 9:
 			dist = 0.10
 			print self.opt_r
 			if self.us_r < 0.20:
 				vel_msg.linear.x = 0
-				vel_msg.angular.z = 1.0
+				vel_msg.angular.z = 1.5
 			elif self.opt_r < dist:
-				vel_msg.linear.x = 0.1
-				vel_msg.angular.z = 0.5
+				vel_msg.linear.x = 0.05
+				vel_msg.angular.z = 0.4
 			elif self.opt_r >= dist:
-				vel_msg.linear.x = 0.1
-				vel_msg.angular.z = -0.5
-			
+				vel_msg.linear.x = 0.05
+				vel_msg.angular.z = -0.4
 		"""速度指令のトピックを送信"""
 		self.pub.publish(vel_msg) 			
 
